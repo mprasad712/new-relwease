@@ -97,14 +97,18 @@ _AUTH_SUCCESS_HTML = """<!DOCTYPE html>
 <p>Outlook connected. You may close this window.</p>
 </body></html>"""
 
+# NOTE: the error template uses plain string replacement (not str.format)
+# because the JS payload contains braces like {type:...} which str.format
+# mis-parses as field specifiers and raises
+# "unexpected '{' in field name".
 _AUTH_ERROR_HTML = """<!DOCTYPE html>
 <html><head><title>Auth Error</title></head>
 <body>
 <script>
-  try { if (window.opener) { window.opener.postMessage({type:'OUTLOOK_AUTH_ERROR',error:'{error}'}, '*'); } } catch(e) {}
+  try { if (window.opener) { window.opener.postMessage({type:'OUTLOOK_AUTH_ERROR',error:'__OUTLOOK_ERR__'}, '*'); } } catch(e) {}
   window.close();
 </script>
-<p>Authentication failed: {error}. You may close this window.</p>
+<p>Authentication failed: __OUTLOOK_ERR__. You may close this window.</p>
 </body></html>"""
 
 
@@ -202,7 +206,12 @@ async def outlook_auth_callback(
 ) -> HTMLResponse:
     """Complete PKCE flow and set the outlook_session cookie."""
     def err(reason: str) -> HTMLResponse:
-        return HTMLResponse(content=_AUTH_ERROR_HTML.format(error=_html_escape(reason)))
+        # Use .replace() rather than .format() — see comment on
+        # _AUTH_ERROR_HTML above.
+        safe_reason = _html_escape(reason).replace("'", "\\'")
+        return HTMLResponse(
+            content=_AUTH_ERROR_HTML.replace("__OUTLOOK_ERR__", safe_reason),
+        )
 
     if error:
         logger.warning(f"Outlook OAuth error from MS: {error} - {error_description}")
