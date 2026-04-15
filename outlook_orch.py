@@ -30,14 +30,37 @@ from urllib.parse import quote_plus, urlparse
 from uuid import uuid4
 
 import requests
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
-from agentcore.api.utils import CurrentActiveUser
+from agentcore.api.utils import CurrentActiveUser, DbSession
+from agentcore.services.auth.utils import get_current_user_by_jwt
+from agentcore.services.outlook_orch.intent_router import handle_outlook_intent
 from agentcore.services.outlook_orch.outlook_service import OutlookService
 from agentcore.services.outlook_orch.token_manager import outlook_token_manager
-from agentcore.services.outlook_orch.intent_router import handle_outlook_intent
+
+
+async def _resolve_current_user_from_request(request: Request, db):
+    """Resolve the current user from cookie, Authorization header, OR query
+    param. The FastAPI-standard `CurrentActiveUser` dependency only reads the
+    Authorization header, which popup windows (opened via `window.open()`) do
+    not send. This helper mirrors the pattern used by `teams.py`'s popup
+    OAuth login so cookies work for browser-navigation flows.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    bearer_token = (
+        auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else None
+    )
+    cookie_token = request.cookies.get("access_token_lf")
+    query_token = request.query_params.get("token")
+    resolved_token = cookie_token or bearer_token or query_token
+    if not resolved_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token",
+        )
+    return await get_current_user_by_jwt(resolved_token, db)
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +140,15 @@ def _html_escape(s: str) -> str:
 @router.get("/auth/login")
 async def outlook_auth_login(
     request: Request,
-    current_user: CurrentActiveUser,
+    session: DbSession,
 ) -> RedirectResponse:
-    """Kick off Authorization Code + PKCE flow."""
+    """Kick off Authorization Code + PKCE flow.
+
+    Opened via `window.open()`, so we resolve the user from the
+    `access_token_lf` cookie (popups don't send Authorization headers).
+    """
+    current_user = await _resolve_current_user_from_request(request, session)
+
     # Purge stale PKCE states
     cutoff = time.time() - _PKCE_STATE_TTL
     with _pkce_lock:
