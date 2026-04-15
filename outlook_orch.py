@@ -37,6 +37,7 @@ from pydantic import BaseModel
 from agentcore.api.utils import CurrentActiveUser
 from agentcore.services.outlook_orch.outlook_service import OutlookService
 from agentcore.services.outlook_orch.token_manager import outlook_token_manager
+from agentcore.services.outlook_orch.intent_router import handle_outlook_intent
 
 logger = logging.getLogger(__name__)
 
@@ -376,6 +377,26 @@ async def get_calendar(req: GetCalendarReq, current_user: CurrentActiveUser):
             content={"error": "Failed to retrieve calendar events"}, status_code=500,
         )
     return {"success": True, "events": events, "count": len(events)}
+
+
+class IntentCheckReq(BaseModel):
+    message: str
+
+
+@router.post("/intent")
+async def outlook_intent_check(
+    req: IntentCheckReq, current_user: CurrentActiveUser,
+):
+    """Frontend precheck — does this message look like an Outlook query?
+
+    If yes and the user is connected, returns the Graph-backed markdown
+    reply the UI can render as-is. If no, returns ``{matched: False}`` so
+    the caller continues with the normal LLM chat flow.
+    """
+    result = handle_outlook_intent(str(current_user.id), req.message)
+    if result is None:
+        return {"matched": False}
+    return {"matched": True, "kind": result.kind, "markdown": result.markdown}
 
 
 @router.post("/send_email")
